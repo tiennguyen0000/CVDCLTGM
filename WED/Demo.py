@@ -1,11 +1,11 @@
 import torch
 from PIL import Image
 
-from model.eunms import Model_Type, Scheduler_Type
-from model.Utils.enums_utils import get_pipes
-from model.config import RunConfig
+from WED.model.eunms import Model_Type, Scheduler_Type
+from WED.model.Utils.enums_utils import get_pipes
+from WED.model.config import RunConfig
 
-from model.main import run as invert
+from WED.model.main import run as invert
 
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
