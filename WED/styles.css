@@ -1,0 +1,14 @@
+body {
+    background-color: #f8f9fa;
+}
+
+.image-container {
+    margin-top: 20px;
+}
+
+img {
+    max-width: 100%;
+    height: auto;
+    border: 2px solid #007bff;
+    border-radius: 5px;
+}
