@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from eunms import Model_Type, Scheduler_Type
+from WED.model.eunms import Model_Type, Scheduler_Type
 
 @dataclass
 class RunConfig:
