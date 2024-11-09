@@ -33,7 +33,10 @@ _, inv_latent, _, all_latents, other_kwargs = invert(input_image,
                                        pipe_inversion=pipe_inversion,
                                        pipe_inference=pipe_inference,
                                        do_reconstruction=False)
+def add_interrupt_attribute(self):
+    self.interrupt = False  # Set to False by default
 
+pipe_inference.__class__.interrupt = False
 rec_image = pipe_inference(image = inv_latent,
                            prompt = "",
                            denoising_start=0.0,
