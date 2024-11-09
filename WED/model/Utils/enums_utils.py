@@ -2,12 +2,12 @@
 import torch
 from diffusers import StableDiffusionImg2ImgPipeline, StableDiffusionXLImg2ImgPipeline
 
-from eunms import Model_Type, Scheduler_Type
+from WED.model.eunms import Model_Type, Scheduler_Type
 # from src.schedulers.euler_scheduler import MyEulerAncestralDiscreteScheduler
 # from src.schedulers.lcm_scheduler import MyLCMScheduler
-from Scheduler.DDIM_Scheduler import MyDDIMScheduler
-from Pieline.SDXL_invert_pipeline import SDXLDDIMPipeline
-from Pieline.SDXL_pipeline import StableDiffusionXLDecompositionPipeline
+from WED.model.Scheduler.DDIM_Scheduler import MyDDIMScheduler
+from WED.model.Pieline.SDXL_invert_pipeline import SDXLDDIMPipeline
+from WED.model.Pieline.SDXL_pipeline import StableDiffusionXLDecompositionPipeline
 
     
 def scheduler_type_to_class(scheduler_type):
