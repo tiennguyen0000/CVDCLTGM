@@ -163,8 +163,6 @@ def get_pipes(model_type, scheduler_type, device="cuda"):
         pipe_inversion.load_lora_weights(adapter_id)
         pipe_inference.load_lora_weights(adapter_id)
 
-<<<<<<< HEAD
+
     return pipe_inversion, pipe_inference
-=======
-    return pipe_inversion, pipe_inference
->>>>>>> master-origin
+
