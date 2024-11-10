@@ -4,7 +4,7 @@ from PIL import Image
 from diffusers.utils.torch_utils import randn_tensor
 
 from WED.model.config import RunConfig
-from WED.model.utils.enums_utils import model_type_to_size, is_stochastic
+from WED.model.Utils.enums_utils import model_type_to_size, is_stochastic
 
 def create_noise_list(model_type, length, generator=None):
     img_size = model_type_to_size(model_type)
