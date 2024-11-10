@@ -1,11 +1,13 @@
 import torch
 from PIL import Image
 
-from model.eunms import Model_Type, Scheduler_Type
-from model.Utils.enums_utils import get_pipes
-from model.config import RunConfig
 
-from model.main import run as invert
+from WED.model.eunms import Model_Type, Scheduler_Type
+from WED.model.Utils.enums_utils import get_pipes
+from WED.model.config import RunConfig
+
+from WED.model.main import run as invert
+
 
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -34,6 +36,11 @@ _, inv_latent, _, all_latents, other_kwargs = invert(input_image,
                                        pipe_inference=pipe_inference,
                                        do_reconstruction=False)
 
+def add_interrupt_attribute(self):
+    self.interrupt = False  # Set to False by default
+
+pipe_inference.__class__.interrupt = False
+
 rec_image = pipe_inference(image = inv_latent,
                            prompt = "",
                            denoising_start=0.0,
@@ -48,4 +55,4 @@ rec_image = pipe_inference(image = inv_latent,
                             ).images[0]
 
 rec_image.resize(original_shape).save("new_cat_3.jpg")
-rec_image.show()
+

@@ -1,6 +1,10 @@
 from dataclasses import dataclass
 
+<<<<<<< HEAD
 from eunms import Model_Type, Scheduler_Type
+=======
+from WED.model.eunms import Model_Type, Scheduler_Type
+>>>>>>> master-origin
 
 @dataclass
 class RunConfig:
@@ -45,4 +49,8 @@ class RunConfig:
     perform_noise_correction: bool = True
 
     def __post_init__(self):
+<<<<<<< HEAD
         pass
+=======
+        pass
+>>>>>>> master-origin

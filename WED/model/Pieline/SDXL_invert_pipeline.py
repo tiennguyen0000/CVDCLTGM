@@ -9,7 +9,11 @@ from diffusers.pipelines.stable_diffusion_xl.pipeline_stable_diffusion_xl import
     PipelineImageInput
 )
 
+<<<<<<< HEAD
 from renoise_invert import inversion_step
+=======
+from WED.model.renoise_invert import inversion_step
+>>>>>>> master-origin
 
 
 class SDXLDDIMPipeline(StableDiffusionXLImg2ImgPipeline):

@@ -6,6 +6,7 @@ from typing import List, Optional, Tuple, Union
 import numpy as np
 
 class DDIMSchedulerOutput(BaseOutput):
+<<<<<<< HEAD
     """
     Output class for the scheduler's `step` function output.
 
@@ -18,6 +19,8 @@ class DDIMSchedulerOutput(BaseOutput):
             `pred_original_sample` can be used to preview progress or for guidance.
     """
 
+=======
+>>>>>>> master-origin
     prev_sample: torch.FloatTensor
     pred_original_sample: Optional[torch.FloatTensor] = None
 
@@ -34,6 +37,7 @@ class MyDDIMScheduler(DDIMScheduler):
         variance_noise: Optional[torch.FloatTensor] = None,
         return_dict: bool = True,
     ) -> Union[DDIMSchedulerOutput, Tuple]:
+<<<<<<< HEAD
         """
         Predict the sample from the previous timestep by reversing the SDE. This function propagates the diffusion
         process from the learned model outputs (most often the predicted noise).
@@ -66,11 +70,15 @@ class MyDDIMScheduler(DDIMScheduler):
                 tuple is returned where the first element is the sample tensor.
 
         """
+=======
+       
+>>>>>>> master-origin
         if self.num_inference_steps is None:
             raise ValueError(
                 "Number of inference steps is 'None', you need to run 'set_timesteps' after creating the scheduler"
             )
 
+<<<<<<< HEAD
         # See formulas (12) and (16) of DDIM paper https://arxiv.org/pdf/2010.02502.pdf
         # Ideally, read DDIM paper in-detail understanding
 
@@ -83,6 +91,9 @@ class MyDDIMScheduler(DDIMScheduler):
         # - pred_prev_sample -> "x_t-1"
 
         # 1. get previous step value (=t-1)
+=======
+       
+>>>>>>> master-origin
         prev_timestep = timestep - self.config.num_train_timesteps // self.num_inference_steps
 
         # 2. compute alphas, betas
@@ -152,4 +163,8 @@ class MyDDIMScheduler(DDIMScheduler):
         if not return_dict:
             return (prev_sample,)
 
+<<<<<<< HEAD
         return DDIMSchedulerOutput(prev_sample=prev_sample, pred_original_sample=pred_original_sample)
+=======
+        return DDIMSchedulerOutput(prev_sample=prev_sample, pred_original_sample=pred_original_sample)
+>>>>>>> master-origin
