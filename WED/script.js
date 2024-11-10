@@ -19,11 +19,23 @@ document.getElementById('generate').addEventListener('click', function() {
     // Gọi API để sinh ảnh từ văn bản
     console.log("Sinh ảnh từ văn bản:", textInput);
     
-    // Ví dụ: Thay đổi hình ảnh sinh ra bằng một hình ảnh mẫu
-    const generatedImage = document.getElementById('generated-image');
-    generatedImage.src = 'https://via.placeholder.com/400?text=' + encodeURIComponent(textInput); // Thay thế bằng
-    generatedImage.style.display = 'block';
+    // Gửi yêu cầu POST đến server Flask thông qua ngrok
+    fetch('http://xyz.ngrok.io/generate-image', {  // Thay bằng URL của ngrok
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ text: textInput })
+    })
+    .then(response => response.json())
+    .then(data => {
+        const generatedImage = document.getElementById('generated-image');
+        generatedImage.src = data.image_url;  // Dùng URL hình ảnh trả về từ API
+        generatedImage.style.display = 'block';
+    })
+    .catch(error => console.error('Có lỗi xảy ra:', error));
 });
+
 
 // Xử lý nút tăng (cộng)
 document.getElementById('increase').addEventListener('click', function() {
