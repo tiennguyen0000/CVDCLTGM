@@ -1,10 +1,8 @@
 from dataclasses import dataclass
 
-<<<<<<< HEAD
-from eunms import Model_Type, Scheduler_Type
-=======
+
 from WED.model.eunms import Model_Type, Scheduler_Type
->>>>>>> master-origin
+
 
 @dataclass
 class RunConfig:
