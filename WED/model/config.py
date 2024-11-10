@@ -47,8 +47,6 @@ class RunConfig:
     perform_noise_correction: bool = True
 
     def __post_init__(self):
-<<<<<<< HEAD
+
         pass
-=======
-        pass
->>>>>>> master-origin
+
