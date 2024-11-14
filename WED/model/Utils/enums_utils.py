@@ -133,8 +133,8 @@ def _get_pipes(model_type, device):
                 torch_dtype=torch.float16,
                 use_safetensors=True,
                 variant="fp16",
-                safety_checker = None,
-                low_cpu_mem_usage=False
+                safety_checker = None
+                #low_cpu_mem_usage=False
             ).to(device)
     else:
         pipe_inference = pipeline_inf.from_pretrained(
