@@ -17,8 +17,8 @@ def scheduler_type_to_class(scheduler_type):
         return MyDDIMScheduler
     # elif scheduler_type == Scheduler_Type.EULER:
     #     return MyEulerAncestralDiscreteScheduler
-    # elif scheduler_type == Scheduler_Type.LCM:
-    #     return MyLCMScheduler
+    elif scheduler_type == Scheduler_Type.LCM:
+        return MyLCMScheduler
     else:
         raise ValueError("Unknown scheduler type")
 
