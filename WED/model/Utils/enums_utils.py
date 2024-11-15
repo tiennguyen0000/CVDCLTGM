@@ -7,7 +7,7 @@ from WED.model.eunms import Model_Type, Scheduler_Type
 # from src.schedulers.euler_scheduler import MyEulerAncestralDiscreteScheduler
 # from src.schedulers.lcm_scheduler import MyLCMScheduler
 from WED.model.Scheduler.DDIM_Scheduler import MyDDIMScheduler
-from WED.model.Scheduler.LCMS_chedule import LCMScheduler
+from WED.model.Scheduler.LCMS_chedule import MyLCMScheduler
 from WED.model.Pieline.SDXL_invert_pipeline import SDXLDDIMPipeline
 from WED.model.Pieline.SDXL_pipeline import StableDiffusionXLDecompositionPipeline
 
@@ -19,7 +19,7 @@ def scheduler_type_to_class(scheduler_type):
     # elif scheduler_type == Scheduler_Type.EULER:
     #     return MyEulerAncestralDiscreteScheduler
     elif scheduler_type == Scheduler_Type.LCM:
-        return LCMScheduler
+        return MyLCMScheduler
     else:
         raise ValueError("Unknown scheduler type")
 
