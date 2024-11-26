@@ -60,10 +60,12 @@ class StableDiffusionXLDecompositionPipeline(StableDiffusionXLImg2ImgPipeline):
         clip_skip: Optional[int] = None,
         callback_on_step_end: Optional[Callable[[int, int, Dict], None]] = None,
         callback_on_step_end_tensor_inputs: List[str] = ["latents"],
+        omega = 1,
+        gamma = 0,
         inv_latents = None,
         prompt_embeds_ref = None,
-        edit_guidance_scale: Optional[Union[float, List[float]]] = 5,
-        enable_edit_guidance: bool = True,
+        added_cond_kwargs_ref = None,
+        t_exit=15,
         quantile_value_M1: float = 0.95,
         quantile_value_M2: float = 0.98,
         **kwargs,
@@ -440,43 +442,66 @@ class StableDiffusionXLDecompositionPipeline(StableDiffusionXLImg2ImgPipeline):
                     added_cond_kwargs=added_cond_kwargs,
                     return_dict=False,
                 )[0]
-                
+                scaling_factor = degrade_proportionally(i, omega, num_inference_steps-1, gamma)
                 noise_pred_out = noise_pred.chunk(2)
                 noise_pred_uncond = noise_pred_out[0]
-                noise_pred_edit_concepts = noise_pred_out[1:]
-                noise_guidance_edit = torch.zeros_like(noise_pred_uncond)
-              
-                # Vòng lặp xử lý từng concept chỉnh sửa (theo logic L-Edit++)
-                if enable_edit_guidance:
-                    for c, noise_pred_edit_concept in enumerate(noise_pred_edit_concepts):
-                        # Cross-attention mask M1
-                        cross_attention_maps = self.unet.get_cross_attention_maps(
-                            latent_model_input, t, encoder_hidden_states=prompt_embeds_ref[c]
-                        )
-                        threshold_M1 = torch.quantile(cross_attention_maps, quantile_value_M1)  # Ví dụ: quantile_value_M1 = 0.95
-                        cross_attention_mask = (cross_attention_maps >= threshold_M1).float()
+                noise_pred_edit_concept = noise_pred_out[1:]
+                cross_attention_maps = self.unet.get_cross_attention_maps(
+                    latent_model_input, t, encoder_hidden_states=prompt_embeds_ref
+                )
+                threshold_M1 = torch.quantile(cross_attention_maps, quantile_value_M1)
+                cross_attention_mask = (cross_attention_maps >= threshold_M1).float()
 
-                        # Noise guidance mask M2
-                        noise_diff = (noise_pred_edit_concept - noise_pred_uncond).abs()
-                        threshold_M2 = torch.quantile(noise_diff, quantile_value_M2)  # Ví dụ: quantile_value_M2 = 0.98
-                        noise_guidance_mask = (noise_diff >= threshold_M2).float()
+                # Noise guidance mask M2
+                noise_diff = (noise_pred_edit_concept - noise_pred_uncond).abs()
+                threshold_M2 = torch.quantile(noise_diff, quantile_value_M2)
+                noise_guidance_mask = (noise_diff >= threshold_M2).float()
 
-                        # Combine masks
-                        edit_mask = edit_guidance_scale[c] * cross_attention_mask * noise_guidance_mask
+                # Combine masks
+                print (scaling_factor)
+                scaling_factor = scaling_factor * cross_attention_mask * noise_guidance_mask
+                print (scaling_factor)
+                print('------------------')
+                
 
-                        # Update noise guidance edit
-                        noise_guidance_edit += edit_mask * (noise_pred_edit_concept - noise_pred_uncond)
+                
+                
+                if 5 < i < t_exit :
+                    noise_pred_recon = self.unet(
+                        reference_model_input,
+                        t,
+                        encoder_hidden_states=prompt_embeds_ref, # original latent
+                        timestep_cond=timestep_cond,
+                        cross_attention_kwargs=self.cross_attention_kwargs,
+                        added_cond_kwargs=added_cond_kwargs_ref,
+                        return_dict=False,
+                    )[0]
+                    noise_pred = (noise_pred + scaling_factor * (noise_pred_recon - noise_pred_fwd))
+                else:
+                    noise_pred_fwd = self.unet(
+                    latent_model_input,
+                    t,
+                    encoder_hidden_states=prompt_embeds_ref, # c prompt
+                    timestep_cond=timestep_cond,
+                    cross_attention_kwargs=self.cross_attention_kwargs,
+                    added_cond_kwargs=added_cond_kwargs_ref,
+                    return_dict=False,
+                    )[0]
+                    noise_pred = noise_pred + scaling_factor * (noise_pred_fwd - noise_pred) 
 
-                # Apply edit guidance
-                noise_pred = noise_pred_uncond + noise_guidance_edit
-
+                # perform guidance
                 if self.do_classifier_free_guidance:
                     noise_pred_uncond, noise_pred_text = noise_pred.chunk(2)
                     noise_pred = noise_pred_uncond + self.guidance_scale * (noise_pred_text - noise_pred_uncond)
+                    noise_pred_uncond, noise_pred_text_recon = noise_pred_recon.chunk(2)
+                    noise_pred_recon = noise_pred_uncond + self.guidance_scale * (noise_pred_text_recon - noise_pred_uncond)
 
                 if self.do_classifier_free_guidance and self.guidance_rescale > 0.0:
+                    # Based on 3.4. in https://arxiv.org/pdf/2305.08891.pdf
                     noise_pred = rescale_noise_cfg(noise_pred, noise_pred_text, guidance_rescale=self.guidance_rescale)
+                    noise_pred_recon = rescale_noise_cfg(noise_pred_recon, noise_pred_text_recon, guidance_rescale=self.guidance_rescale)
 
+                # compute the previous noisy sample x_t -> x_t-1
                 latents = self.scheduler.step(noise_pred, t, latents, **extra_step_kwargs, return_dict=False)[0]
 
                 if callback_on_step_end is not None:
