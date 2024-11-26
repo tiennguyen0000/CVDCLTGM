@@ -67,11 +67,12 @@ def run(init_image: Image,
                             strength = cfg.inversion_max_step,
                             denoising_start = 1.0-cfg.inversion_max_step,
                             guidance_scale = guidance_scale,
-                            omega=1,
-                            gamma=0,
+                            edit_guidance_scale=[12],
+                            enable_edit_guidance= True,
+                            quantile_value_M1= 0.9,
+                            quantile_value_M2= 0.85,
                             inv_latents=all_latents,
-                            prompt_embeds_ref=other_kwargs[0],
-                            added_cond_kwargs_ref=other_kwargs[1]).images[0]
+                            prompt_embeds_ref=other_kwargs[0]).images[0]
     else:
         img = None
                     
