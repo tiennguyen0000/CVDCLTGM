@@ -2,13 +2,12 @@ import torch
 import numpy as np
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion import (
-    StableDiffusionPipelineOutput,
     retrieve_timesteps,
     PipelineImageInput,
     rescale_noise_cfg,
 )
 
-from diffusers import StableDiffusionXLPipeline, StableDiffusionXLImg2ImgPipeline
+from diffusers import StableDiffusionXLImg2ImgPipeline
 from diffusers.utils import is_torch_xla_available
 from diffusers.pipelines.stable_diffusion_xl.pipeline_output import StableDiffusionXLPipelineOutput
 
