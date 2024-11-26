@@ -3,8 +3,8 @@ import torch
 from PIL import Image
 from diffusers.utils.torch_utils import randn_tensor
 
-from WED.model.config import RunConfig
-from WED.model.Utils.enums_utils import model_type_to_size, is_stochastic
+from src.config import RunConfig
+from src.utils.enums_utils import model_type_to_size, is_stochastic
 
 def create_noise_list(model_type, length, generator=None):
     img_size = model_type_to_size(model_type)
@@ -67,12 +67,13 @@ def run(init_image: Image,
                             strength = cfg.inversion_max_step,
                             denoising_start = 1.0-cfg.inversion_max_step,
                             guidance_scale = guidance_scale,
-                            edit_guidance_scale=[12],
-                            enable_edit_guidance= True,
-                            quantile_value_M1= 0.9,
-                            quantile_value_M2= 0.85,
+                            omega=1,
+                            gamma=0,
                             inv_latents=all_latents,
-                            prompt_embeds_ref=other_kwargs[0]).images[0]
+                            prompt_embeds_ref=other_kwargs[0],
+                            quantile_value_M1 = 0.95,
+                            quantile_value_M2 = 0.98,
+                            added_cond_kwargs_ref=other_kwargs[1]).images[0]
     else:
         img = None
                     
