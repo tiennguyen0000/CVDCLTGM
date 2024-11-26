@@ -1,6 +1,5 @@
 
 import torch
-from diffusers import StableDiffusionImg2ImgPipeline, StableDiffusionXLImg2ImgPipeline
 
 
 from WED.model.eunms import Model_Type, Scheduler_Type
@@ -36,10 +35,6 @@ def is_stochastic(scheduler_type):
 def model_type_to_class(model_type):
     if model_type == Model_Type.SDXL:
         return StableDiffusionXLDecompositionPipeline, SDXLDDIMPipeline
-    elif model_type == Model_Type.SDXL_Turbo:
-        return StableDiffusionXLImg2ImgPipeline, SDXLDDIMPipeline
-    elif model_type == Model_Type.LCM_SDXL:
-        return StableDiffusionXLImg2ImgPipeline, SDXLDDIMPipeline
     # elif model_type == Model_Type.SD15:
     #     return StableDiffusionImg2ImgPipeline, SDDDIMPipeline
     # elif model_type == Model_Type.SD14:
@@ -167,4 +162,3 @@ def get_pipes(model_type, scheduler_type, device="cuda"):
 
 
     return pipe_inversion, pipe_inference
-
