@@ -71,8 +71,9 @@ def run(init_image: Image,
                             gamma=0,
                             inv_latents=all_latents,
                             prompt_embeds_ref=other_kwargs[0],
-                            quantile_value_M1 = 0.95,
-                            quantile_value_M2 = 0.98,
+                            edit_threshold= [0.9, 0.85],
+                            edit_guidance_scale= [5.0],
+                            reverse_editing_direction= [False],
                             added_cond_kwargs_ref=other_kwargs[1]).images[0]
     else:
         img = None
