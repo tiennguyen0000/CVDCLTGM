@@ -6,7 +6,10 @@ from diffusers.pipelines.stable_diffusion.pipeline_stable_diffusion import (
     PipelineImageInput,
     rescale_noise_cfg,
 )
+import torch.nn.functional as F
 
+from diffusers.models.attention_processor import AttnProcessor
+from diffusers.models.attention import Attention
 from diffusers import StableDiffusionXLImg2ImgPipeline
 from diffusers.utils import is_torch_xla_available
 from diffusers.pipelines.stable_diffusion_xl.pipeline_output import StableDiffusionXLPipelineOutput
@@ -20,7 +23,271 @@ else:
 def degrade_proportionally(i, max_value=1, num_inference_steps=49,  gamma=0):
     return max(0, max_value * (1 - i / num_inference_steps)**gamma)
 
+class LeditsAttentionStore:
+    @staticmethod
+    def get_empty_store():
+        return {"down_cross": [], "mid_cross": [], "up_cross": [], "down_self": [], "mid_self": [], "up_self": []}
+
+    def __call__(self, attn, is_cross: bool, place_in_unet: str, editing_prompts, PnP=False):
+        # attn.shape = batch_size * head_size, seq_len query, seq_len_key
+        if attn.shape[1] <= self.max_size:
+            bs = 1 + int(PnP) + editing_prompts
+            skip = 2 if PnP else 1  # skip PnP & unconditional
+            attn = torch.stack(attn.split(self.batch_size)).permute(1, 0, 2, 3)
+            source_batch_size = int(attn.shape[1] // bs)
+            self.forward(attn[:, skip * source_batch_size :], is_cross, place_in_unet)
+
+    def forward(self, attn, is_cross: bool, place_in_unet: str):
+        key = f"{place_in_unet}_{'cross' if is_cross else 'self'}"
+
+        self.step_store[key].append(attn)
+
+    def between_steps(self, store_step=True):
+        if store_step:
+            if self.average:
+                if len(self.attention_store) == 0:
+                    self.attention_store = self.step_store
+                else:
+                    for key in self.attention_store:
+                        for i in range(len(self.attention_store[key])):
+                            self.attention_store[key][i] += self.step_store[key][i]
+            else:
+                if len(self.attention_store) == 0:
+                    self.attention_store = [self.step_store]
+                else:
+                    self.attention_store.append(self.step_store)
+
+            self.cur_step += 1
+        self.step_store = self.get_empty_store()
+
+    def get_attention(self, step: int):
+        if self.average:
+            attention = {
+                key: [item / self.cur_step for item in self.attention_store[key]] for key in self.attention_store
+            }
+        else:
+            assert step is not None
+            attention = self.attention_store[step]
+        return attention
+
+    def aggregate_attention(
+        self, attention_maps, prompts, res: Union[int, Tuple[int]], from_where: List[str], is_cross: bool, select: int
+    ):
+        out = [[] for x in range(self.batch_size)]
+        if isinstance(res, int):
+            num_pixels = res**2
+            resolution = (res, res)
+        else:
+            num_pixels = res[0] * res[1]
+            resolution = res[:2]
+
+        for location in from_where:
+            for bs_item in attention_maps[f"{location}_{'cross' if is_cross else 'self'}"]:
+                for batch, item in enumerate(bs_item):
+                    if item.shape[1] == num_pixels:
+                        cross_maps = item.reshape(len(prompts), -1, *resolution, item.shape[-1])[select]
+                        out[batch].append(cross_maps)
+
+        out = torch.stack([torch.cat(x, dim=0) for x in out])
+        # average over heads
+        out = out.sum(1) / out.shape[1]
+        return out
+
+    def __init__(self, average: bool, batch_size=1, max_resolution=16, max_size: int = None):
+        self.step_store = self.get_empty_store()
+        self.attention_store = []
+        self.cur_step = 0
+        self.average = average
+        self.batch_size = batch_size
+        if max_size is None:
+            self.max_size = max_resolution**2
+        elif max_size is not None and max_resolution is None:
+            self.max_size = max_size
+        else:
+            raise ValueError("Only allowed to set one of max_resolution or max_size")
+
+import math
+# Copied from diffusers.pipelines.ledits_pp.pipeline_leditspp_stable_diffusion.LeditsGaussianSmoothing
+class LeditsGaussianSmoothing:
+    def __init__(self, device):
+        kernel_size = [3, 3]
+        sigma = [0.5, 0.5]
+
+        # The gaussian kernel is the product of the gaussian function of each dimension.
+        kernel = 1
+        meshgrids = torch.meshgrid([torch.arange(size, dtype=torch.float32) for size in kernel_size])
+        for size, std, mgrid in zip(kernel_size, sigma, meshgrids):
+            mean = (size - 1) / 2
+            kernel *= 1 / (std * math.sqrt(2 * math.pi)) * torch.exp(-(((mgrid - mean) / (2 * std)) ** 2))
+
+        # Make sure sum of values in gaussian kernel equals 1.
+        kernel = kernel / torch.sum(kernel)
+
+        # Reshape to depthwise convolutional weight
+        kernel = kernel.view(1, 1, *kernel.size())
+        kernel = kernel.repeat(1, *[1] * (kernel.dim() - 1))
+
+        self.weight = kernel.to(device)
+
+    def __call__(self, input):
+        """
+        Arguments:
+        Apply gaussian filter to input.
+            input (torch.Tensor): Input to apply gaussian filter on.
+        Returns:
+            filtered (torch.Tensor): Filtered output.
+        """
+        return F.conv2d(input, weight=self.weight.to(input.dtype))
+
+# Copied from diffusers.pipelines.ledits_pp.pipeline_leditspp_stable_diffusion.LEDITSCrossAttnProcessor
+class LEDITSCrossAttnProcessor:
+    def __init__(self, attention_store, place_in_unet, pnp, editing_prompts):
+        self.attnstore = attention_store
+        self.place_in_unet = place_in_unet
+        self.editing_prompts = editing_prompts
+        self.pnp = pnp
+
+    def __call__(
+        self,
+        attn: Attention,
+        hidden_states,
+        encoder_hidden_states,
+        attention_mask=None,
+        temb=None,
+    ):
+        batch_size, sequence_length, _ = (
+            hidden_states.shape if encoder_hidden_states is None else encoder_hidden_states.shape
+        )
+        attention_mask = attn.prepare_attention_mask(attention_mask, sequence_length, batch_size)
+
+        query = attn.to_q(hidden_states)
+
+        if encoder_hidden_states is None:
+            encoder_hidden_states = hidden_states
+        elif attn.norm_cross:
+            encoder_hidden_states = attn.norm_encoder_hidden_states(encoder_hidden_states)
+
+        key = attn.to_k(encoder_hidden_states)
+        value = attn.to_v(encoder_hidden_states)
+
+        query = attn.head_to_batch_dim(query)
+        key = attn.head_to_batch_dim(key)
+        value = attn.head_to_batch_dim(value)
+
+        attention_probs = attn.get_attention_scores(query, key, attention_mask)
+        self.attnstore(
+            attention_probs,
+            is_cross=True,
+            place_in_unet=self.place_in_unet,
+            editing_prompts=self.editing_prompts,
+            PnP=self.pnp,
+        )
+
+        hidden_states = torch.bmm(attention_probs, value)
+        hidden_states = attn.batch_to_head_dim(hidden_states)
+
+        # linear proj
+        hidden_states = attn.to_out[0](hidden_states)
+        # dropout
+        hidden_states = attn.to_out[1](hidden_states)
+
+        hidden_states = hidden_states / attn.rescale_output_factor
+        return hidden_states
+
 class StableDiffusionXLDecompositionPipeline(StableDiffusionXLImg2ImgPipeline):
+    
+
+    
+    
+    def prepare_text_embeddings(
+        self,
+        prompt_embeds,
+        negative_prompt_embeds,
+        batch_size,
+        num_images_per_prompt,
+        device
+    ):
+        # 1. Validate input dimensions
+        if prompt_embeds.shape[-2] != 640:  # Expected sequence length
+            # Reshape or truncate to correct size
+            prompt_embeds = prompt_embeds[:, :640, :]
+            if negative_prompt_embeds is not None:
+                negative_prompt_embeds = negative_prompt_embeds[:, :640, :]
+        
+        # 2. Ensure correct batch size
+        prompt_embeds = prompt_embeds.repeat(batch_size * num_images_per_prompt, 1, 1)
+        if negative_prompt_embeds is not None:
+            negative_prompt_embeds = negative_prompt_embeds.repeat(batch_size * num_images_per_prompt, 1, 1)
+
+        # 3. Move to correct device and dtype
+        prompt_embeds = prompt_embeds.to(device=device, dtype=self.unet.dtype)
+        if negative_prompt_embeds is not None:
+            negative_prompt_embeds = negative_prompt_embeds.to(device=device, dtype=self.unet.dtype)
+
+        # 4. Validate final shapes
+        expected_shape = (batch_size * num_images_per_prompt, 640, -1)
+        if prompt_embeds.shape[:2] != expected_shape[:2]:
+            raise ValueError(
+                f"Unexpected prompt_embeds shape: {prompt_embeds.shape}. "
+                f"Expected: {expected_shape}"
+            )
+
+        return prompt_embeds, negative_prompt_embeds
+    
+    def prepare_unet(self, attention_store, PnP: bool = False):
+        attn_procs = {}
+        for name in self.unet.attn_processors.keys():
+            if name.startswith("mid_block"):
+                place_in_unet = "mid"
+            elif name.startswith("up_blocks"):
+                place_in_unet = "up"
+            elif name.startswith("down_blocks"):
+                place_in_unet = "down"
+            else:
+                continue
+
+            if "attn2" in name and place_in_unet != "mid":
+                attn_procs[name] = LEDITSCrossAttnProcessor(
+                    attention_store=attention_store,
+                    place_in_unet=place_in_unet,
+                    pnp=PnP,
+                    editing_prompts=self.enabled_editing_prompts,
+                )
+            else:
+                attn_procs[name] = AttnProcessor()
+
+        self.unet.set_attn_processor(attn_procs)
+    
+    def get_guidance_scale_embedding(
+        self, w: torch.Tensor, embedding_dim: int = 512, dtype: torch.dtype = torch.float32
+    ) -> torch.Tensor:
+        """
+        See https://github.com/google-research/vdm/blob/dc27b98a554f65cdc654b800da5aa1846545d41b/model_vdm.py#L298
+
+        Args:
+            w (`torch.Tensor`):
+                Generate embedding vectors with a specified guidance scale to subsequently enrich timestep embeddings.
+            embedding_dim (`int`, *optional*, defaults to 512):
+                Dimension of the embeddings to generate.
+            dtype (`torch.dtype`, *optional*, defaults to `torch.float32`):
+                Data type of the generated embeddings.
+
+        Returns:
+            `torch.Tensor`: Embedding vectors with shape `(len(w), embedding_dim)`.
+        """
+        assert len(w.shape) == 1
+        w = w * 1000.0
+
+        half_dim = embedding_dim // 2
+        emb = torch.log(torch.tensor(10000.0)) / (half_dim - 1)
+        emb = torch.exp(torch.arange(half_dim, dtype=dtype) * -emb)
+        emb = w.to(dtype)[:, None] * emb[None, :]
+        emb = torch.cat([torch.sin(emb), torch.cos(emb)], dim=1)
+        if embedding_dim % 2 == 1:  # zero pad
+            emb = torch.nn.functional.pad(emb, (0, 1))
+        assert emb.shape == (w.shape[0], embedding_dim)
+        return emb
+    
     @torch.no_grad()
     def __call__(
         self,
@@ -65,8 +332,11 @@ class StableDiffusionXLDecompositionPipeline(StableDiffusionXLImg2ImgPipeline):
         prompt_embeds_ref = None,
         added_cond_kwargs_ref = None,
         t_exit=15,
-        quantile_value_M1: float = 0.95,
-        quantile_value_M2: float = 0.98,
+        sem_guidance: Optional[List[torch.Tensor]] = [],
+        store_averaged_over_steps: bool = True,
+        edit_threshold: Optional[Union[float, List[float]]] = 0.9,
+        edit_guidance_scale: Optional[Union[float, List[float]]] = [5.0, 10.0],
+        reverse_editing_direction: Optional[Union[bool, List[bool]]] = False,
         **kwargs,
     ):
         
@@ -116,8 +386,10 @@ class StableDiffusionXLDecompositionPipeline(StableDiffusionXLImg2ImgPipeline):
             batch_size = len(prompt)
         else:
             batch_size = prompt_embeds.shape[0]
-
+        
+        self.smoothing = LeditsGaussianSmoothing(self.device)
         device = self._execution_device
+        self.enabled_editing_prompts = len(prompt)
 
         # 3. Encode input prompt
         text_encoder_lora_scale = (
@@ -135,7 +407,7 @@ class StableDiffusionXLDecompositionPipeline(StableDiffusionXLImg2ImgPipeline):
             num_images_per_prompt=num_images_per_prompt,
             do_classifier_free_guidance=self.do_classifier_free_guidance,
             negative_prompt=negative_prompt,
-            negative_prompt_2=negative_prompt_2,
+            negative_prompt_2=negative_prompt_2, 
             prompt_embeds=prompt_embeds,
             negative_prompt_embeds=negative_prompt_embeds,
             pooled_prompt_embeds=pooled_prompt_embeds,
@@ -143,6 +415,7 @@ class StableDiffusionXLDecompositionPipeline(StableDiffusionXLImg2ImgPipeline):
             lora_scale=text_encoder_lora_scale,
             clip_skip=self.clip_skip,
         )
+
 
         # 4. Preprocess image
         image = self.image_processor.preprocess(image)
@@ -172,6 +445,18 @@ class StableDiffusionXLDecompositionPipeline(StableDiffusionXLImg2ImgPipeline):
             generator,
             add_noise,
         )
+        batch_sizeI = image.shape[0]
+
+        self.attention_store = LeditsAttentionStore(
+                average=store_averaged_over_steps,
+                batch_size=batch_sizeI,
+                max_size=(latents.shape[-2] / 4.0) * (latents.shape[-1] / 4.0),
+                max_resolution=None,
+            )
+        
+        self.prepare_unet(self.attention_store)
+        resolution = latents.shape[-2:]
+        att_res = (int(resolution[0] / 4), int(resolution[1] / 4))
         # 7. Prepare extra step kwargs.
         extra_step_kwargs = self.prepare_extra_step_kwargs(generator, eta)
 
@@ -223,6 +508,7 @@ class StableDiffusionXLDecompositionPipeline(StableDiffusionXLImg2ImgPipeline):
                 ip_adapter_image, device, batch_size * num_images_per_prompt
             )
 
+
         # 9. Denoising loop
         num_warmup_steps = max(len(timesteps) - num_inference_steps * self.scheduler.order, 0)
 
@@ -265,7 +551,7 @@ class StableDiffusionXLDecompositionPipeline(StableDiffusionXLImg2ImgPipeline):
                  
                 reference_latents = inv_latents[num_inference_steps - i]
                 # expand the latents if we are doing classifier free guidance
-                latent_model_input = torch.cat([latents] * 2) if self.do_classifier_free_guidance else latents
+                latent_model_input = torch.cat([latents] * (1 + self.enabled_editing_prompts)) if self.do_classifier_free_guidance else latents
 
                 latent_model_input = self.scheduler.scale_model_input(latent_model_input, t)
 
@@ -291,30 +577,126 @@ class StableDiffusionXLDecompositionPipeline(StableDiffusionXLImg2ImgPipeline):
                 )[0]
                 
                 scaling_factor = degrade_proportionally(i, omega, num_inference_steps-1, gamma)
-                noise_pred_out = noise_pred.chunk(2)
+               
+                #############
+                ###############
+                noise_pred_out = noise_pred.chunk(1 + self.enabled_editing_prompts)  # [b,4, 64, 64]
                 noise_pred_uncond = noise_pred_out[0]
-                noise_pred_edit_concept = noise_pred_out[1:]
-                cross_attention_maps = get_cross_attention(
-                    self, latent_model_input, t, encoder_hidden_states=prompt_embeds_ref
-                )
-                threshold_M1 = torch.quantile(cross_attention_maps, quantile_value_M1)
-                cross_attention_mask = (cross_attention_maps >= threshold_M1).float()
+                noise_pred_edit_concepts = noise_pred_out[1:]
 
-                # Noise guidance mask M2
-                noise_diff = (noise_pred_edit_concept - noise_pred_uncond).abs()
-                threshold_M2 = torch.quantile(noise_diff, quantile_value_M2)
-                noise_guidance_mask = (noise_diff >= threshold_M2).float()
+                noise_guidance_edit = torch.zeros(
+                    noise_pred_uncond.shape,
+                    device=self.device,
+                    dtype=noise_pred_uncond.dtype,
+                )
+                self.sem_guidance = []
+                # self.activation_mask = None
+                # print("svsbs: ", noise_pred_edit_concepts, noise_pred.shape, self.enabled_editing_prompts, timesteps)
+
+                # if self.activation_mask is None:
+                #     self.activation_mask = torch.zeros(
+                #         (len(timesteps), self.enabled_editing_prompts, *noise_pred_edit_concepts[0].shape)
+                #     )
+                # if self.sem_guidance is None:
+                #     self.sem_guidance = torch.zeros((len(timesteps), *noise_pred_uncond.shape))
+
+                for c, noise_pred_edit_concept in enumerate(noise_pred_edit_concepts):
+                    noise_guidance_edit_tmp = noise_pred_edit_concept - noise_pred_uncond
+
+                    if reverse_editing_direction[c]:
+                        noise_guidance_edit_tmp = noise_guidance_edit_tmp * -1
+
+                    noise_guidance_edit_tmp = noise_guidance_edit_tmp * edit_guidance_scale[c]
+                    ######### attn mask
+                    out = self.attention_store.aggregate_attention(
+                        attention_maps=self.attention_store.step_store,
+                        prompts=self.text_cross_attention_maps,
+                        res=att_res,
+                        from_where=["up", "down"],
+                        is_cross=True,
+                        select=self.text_cross_attention_maps.index(prompt[c]),
+                    )
+                    # Sử dụng toàn bộ attention map
+                    attn_map = out[:, :, :, 1:]
+                    # Trung bình trên tất cả các token
+                    attn_map = torch.sum(attn_map, dim=3)
+                    attn_map = F.pad(attn_map.unsqueeze(1), (1, 1, 1, 1), mode="reflect")
+                    attn_map = self.smoothing(attn_map).squeeze(1)
+
+                    # torch.quantile function expects float32
+                    if attn_map.dtype == torch.float32:
+                        tmp = torch.quantile(attn_map.flatten(start_dim=1), edit_threshold[c], dim=1)
+                    else:
+                        tmp = torch.quantile(
+                            attn_map.flatten(start_dim=1).to(torch.float32), edit_threshold[c], dim=1
+                        ).to(attn_map.dtype)
+                    attn_mask = torch.where(
+                        attn_map >= tmp.unsqueeze(1).unsqueeze(1).repeat(1, *att_res), 1.0, 0.0
+                    )
+
+                    # resolution must match latent space dimension
+                    attn_mask = F.interpolate(
+                        attn_mask.unsqueeze(1),
+                        noise_guidance_edit_tmp.shape[-2:],  # 64,64
+                    ).repeat(1, 4, 1, 1)
+                    self.activation_mask[i, c] = attn_mask.detach().cpu()
+                    
+                    ########### intersect_mask
+                    noise_guidance_edit_tmp_quantile = torch.abs(noise_guidance_edit_tmp)
+                    noise_guidance_edit_tmp_quantile = torch.sum(
+                        noise_guidance_edit_tmp_quantile, dim=1, keepdim=True
+                    )
+                    noise_guidance_edit_tmp_quantile = noise_guidance_edit_tmp_quantile.repeat(
+                        1, self.unet.config.in_channels, 1, 1
+                    )
+
+                    # torch.quantile function expects float32
+                    if noise_guidance_edit_tmp_quantile.dtype == torch.float32:
+                        tmp = torch.quantile(
+                            noise_guidance_edit_tmp_quantile.flatten(start_dim=2),
+                            edit_threshold[c],
+                            dim=2,
+                            keepdim=False,
+                        )
+                    else:
+                        tmp = torch.quantile(
+                            noise_guidance_edit_tmp_quantile.flatten(start_dim=2).to(torch.float32),
+                            edit_threshold[c],
+                            dim=2,
+                            keepdim=False,
+                        ).to(noise_guidance_edit_tmp_quantile.dtype)
+
+                    intersect_mask = (
+                        torch.where(
+                            noise_guidance_edit_tmp_quantile >= tmp[:, :, None, None],
+                            torch.ones_like(noise_guidance_edit_tmp),
+                            torch.zeros_like(noise_guidance_edit_tmp),
+                        )
+                        * attn_mask # attn mask
+                    )
+
+                    self.activation_mask[i, c] = intersect_mask.detach().cpu()
+
+                    noise_guidance_edit_tmp = noise_guidance_edit_tmp * intersect_mask
+                    
+                    noise_guidance_edit += noise_guidance_edit_tmp
+
+                self.sem_guidance.append(noise_guidance_edit.detach().cpu())
+                
+
+                ################
+                ###########
 
                 # Combine masks
-                print (scaling_factor)
-                scaling_factor = scaling_factor * cross_attention_mask * noise_guidance_mask
-                print (scaling_factor)
-                print('------------------')
+                # print (scaling_factor)
+                scaling_factor = scaling_factor * noise_guidance_edit
+                #print (scaling_factor)
+                # print('------------------')
                 
 
                 
                 
-                if 5 < i < t_exit :
+                if  i < t_exit :
                     noise_pred_recon = self.unet(
                         reference_model_input,
                         t,
@@ -324,7 +706,7 @@ class StableDiffusionXLDecompositionPipeline(StableDiffusionXLImg2ImgPipeline):
                         added_cond_kwargs=added_cond_kwargs_ref,
                         return_dict=False,
                     )[0]
-                    noise_pred = (noise_pred + scaling_factor * (noise_pred_recon - noise_pred_fwd))
+                    noise_pred = (noise_pred + scaling_factor * (noise_pred_recon - noise_pred))
                 else:
                     noise_pred_fwd = self.unet(
                     latent_model_input,
@@ -408,40 +790,3 @@ class StableDiffusionXLDecompositionPipeline(StableDiffusionXLImg2ImgPipeline):
             return (image,)
 
         return StableDiffusionXLPipelineOutput(images=image)
-    
-class CrossAttentionMapProcessor:
-    def __init__(self):
-        self.attention_maps = []
-        
-    def __call__(self, attn, hidden_states, encoder_hidden_states=None, attention_mask=None):
-        batch_size, sequence_length, _ = hidden_states.shape
-        attention_probs = torch.bmm(hidden_states, encoder_hidden_states.transpose(-1, -2))
-        
-        # Lưu attention map
-        self.attention_maps.append(attention_probs.detach())
-        
-        # Thực hiện attention bình thường
-        attention_output = torch.bmm(attention_probs, encoder_hidden_states)
-        return attention_output
-
-# 2. Trong pipeline, thay thế cách gọi cũ bằng:
-def get_cross_attention(self, latent_model_input, t, encoder_hidden_states):
-    # Khởi tạo processor
-    processor = CrossAttentionMapProcessor()
-    original_processors = {}
-    
-    # Lưu và thay thế processors
-    for name, module in self.unet.named_modules():
-        if "attn2" in name:  # chỉ cross-attention layers
-            original_processors[name] = module.processor
-            module.processor = processor
-    
-    # Chạy forward pass
-    self.unet(latent_model_input, t, encoder_hidden_states=encoder_hidden_states)
-    
-    # Khôi phục processors gốc
-    for name, module in self.unet.named_modules():
-        if "attn2" in name:
-            module.processor = original_processors[name]
-            
-    return processor.attention_maps
