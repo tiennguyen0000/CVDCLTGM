@@ -21,7 +21,8 @@ else:
     XLA_AVAILABLE = False
 
 def degrade_proportionally(i, max_value=1, num_inference_steps=49,  gamma=0):
-    return max(0, max_value * (1 - i / num_inference_steps)**gamma)
+    v = max_value * (1 - i / num_inference_steps)**gamma
+    return v if (v>0) else v*0.3
 
 class LeditsAttentionStore:
     @staticmethod
@@ -493,11 +494,12 @@ class StableDiffusionXLDecompositionPipeline(StableDiffusionXLImg2ImgPipeline):
         )
         add_time_ids = add_time_ids.repeat(batch_size * num_images_per_prompt, 1)
 
-        if self.do_classifier_free_guidance:
-            prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
-            add_text_embeds = torch.cat([negative_pooled_prompt_embeds, add_text_embeds], dim=0)
-            add_neg_time_ids = add_neg_time_ids.repeat(batch_size * num_images_per_prompt, 1)
-            add_time_ids = torch.cat([add_neg_time_ids, add_time_ids], dim=0)
+        
+        # prompt_embeds = torch.cat([negative_prompt_embeds, prompt_embeds], dim=0)
+        # add_text_embeds = torch.cat([negative_pooled_prompt_embeds, add_text_embeds], dim=0)
+        # add_neg_time_ids = add_neg_time_ids.repeat(batch_size * num_images_per_prompt, 1)
+        # add_time_ids = torch.cat([add_neg_time_ids, add_time_ids], dim=0)
+        self.text_cross_attention_maps = prompt
 
         prompt_embeds = prompt_embeds.to(device)
         add_text_embeds = add_text_embeds.to(device)
@@ -583,6 +585,7 @@ class StableDiffusionXLDecompositionPipeline(StableDiffusionXLImg2ImgPipeline):
                 noise_pred_out = noise_pred.chunk(1 + self.enabled_editing_prompts)  # [b,4, 64, 64]
                 noise_pred_uncond = noise_pred_out[0]
                 noise_pred_edit_concepts = noise_pred_out[1:]
+                
 
                 noise_guidance_edit = torch.zeros(
                     noise_pred_uncond.shape,
@@ -590,18 +593,18 @@ class StableDiffusionXLDecompositionPipeline(StableDiffusionXLImg2ImgPipeline):
                     dtype=noise_pred_uncond.dtype,
                 )
                 self.sem_guidance = []
-                # self.activation_mask = None
+                if not hasattr(self, "activation_mask"):
+                    self.activation_mask = {}  # Tạo dạng dictionary
+
                 # print("svsbs: ", noise_pred_edit_concepts, noise_pred.shape, self.enabled_editing_prompts, timesteps)
 
-                # if self.activation_mask is None:
-                #     self.activation_mask = torch.zeros(
-                #         (len(timesteps), self.enabled_editing_prompts, *noise_pred_edit_concepts[0].shape)
-                #     )
+            
+
                 # if self.sem_guidance is None:
                 #     self.sem_guidance = torch.zeros((len(timesteps), *noise_pred_uncond.shape))
 
-                for c, noise_pred_edit_concept in enumerate(noise_pred_edit_concepts):
-                    noise_guidance_edit_tmp = noise_pred_edit_concept - noise_pred_uncond
+                for c in range(len(edit_guidance_scale)):
+                    noise_guidance_edit_tmp = noise_pred*0.2
 
                     if reverse_editing_direction[c]:
                         noise_guidance_edit_tmp = noise_guidance_edit_tmp * -1
@@ -674,6 +677,7 @@ class StableDiffusionXLDecompositionPipeline(StableDiffusionXLImg2ImgPipeline):
                         )
                         * attn_mask # attn mask
                     )
+                    print(intersect_mask.sum(), noise_guidance_edit_tmp.sum(), c)
 
                     self.activation_mask[i, c] = intersect_mask.detach().cpu()
 
@@ -688,7 +692,7 @@ class StableDiffusionXLDecompositionPipeline(StableDiffusionXLImg2ImgPipeline):
                 ###########
 
                 # Combine masks
-                # print (scaling_factor)
+                print ("   ",scaling_factor)
                 scaling_factor = scaling_factor * noise_guidance_edit
                 #print (scaling_factor)
                 # print('------------------')
@@ -696,7 +700,7 @@ class StableDiffusionXLDecompositionPipeline(StableDiffusionXLImg2ImgPipeline):
 
                 
                 
-                if  i < t_exit :
+                if  i < 3 :
                     noise_pred_recon = self.unet(
                         reference_model_input,
                         t,
