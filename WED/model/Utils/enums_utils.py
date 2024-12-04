@@ -1,22 +1,20 @@
 
 import torch
-
+from diffusers import StableDiffusionXLImg2ImgPipeline
 
 from WED.model.eunms import Model_Type, Scheduler_Type
 # from src.schedulers.euler_scheduler import MyEulerAncestralDiscreteScheduler
 # from src.schedulers.lcm_scheduler import MyLCMScheduler
-from WED.model.Scheduler.DDIM_Scheduler import MyDDIMScheduler
-from WED.model.Scheduler.LCM_schedule import MyLCMScheduler
-from WED.model.Pieline.SDXL_invert_pipeline import SDXLDDIMPipeline
-from WED.model.Pieline.SDXL_pipeline import StableDiffusionXLDecompositionPipeline
-
-
+from WED.model.schedulers.DDIM_Scheduler import MyDDIMScheduler
+from WED.model.pieline.SDXL_invert_pipeline import SDXLDDIMPipeline
+# from src.pipes.sdxl_forward_pipeline import StableDiffusionXLDecompositionPipeline
+from WED.model.pieline.sd_inversion_pipeline import SDDDIMPipeline
     
 def scheduler_type_to_class(scheduler_type):
     if scheduler_type == Scheduler_Type.DDIM:
         return MyDDIMScheduler
-    # elif scheduler_type == Scheduler_Type.EULER:
-    #     return MyEulerAncestralDiscreteScheduler
+    elif scheduler_type == Scheduler_Type.EULER:
+        return MyEulerAncestralDiscreteScheduler
     elif scheduler_type == Scheduler_Type.LCM:
         return MyLCMScheduler
     else:
@@ -35,14 +33,18 @@ def is_stochastic(scheduler_type):
 def model_type_to_class(model_type):
     if model_type == Model_Type.SDXL:
         return StableDiffusionXLDecompositionPipeline, SDXLDDIMPipeline
-    # elif model_type == Model_Type.SD15:
-    #     return StableDiffusionImg2ImgPipeline, SDDDIMPipeline
-    # elif model_type == Model_Type.SD14:
-    #     return StableDiffusionImg2ImgPipeline, SDDDIMPipeline
-    # elif model_type == Model_Type.SD21:
-    #     return StableDiffusionImg2ImgPipeline, SDDDIMPipeline
-    # elif model_type == Model_Type.SD21_Turbo:
-    #     return StableDiffusionImg2ImgPipeline, SDDDIMPipeline
+    elif model_type == Model_Type.SDXL_Turbo:
+        return StableDiffusionXLImg2ImgPipeline, SDXLDDIMPipeline
+    elif model_type == Model_Type.LCM_SDXL:
+        return StableDiffusionXLImg2ImgPipeline, SDXLDDIMPipeline
+    elif model_type == Model_Type.SD15:
+        return StableDiffusionImg2ImgPipeline, SDDDIMPipeline
+    elif model_type == Model_Type.SD14:
+        return StableDiffusionImg2ImgPipeline, SDDDIMPipeline
+    elif model_type == Model_Type.SD21:
+        return StableDiffusionImg2ImgPipeline, SDDDIMPipeline
+    elif model_type == Model_Type.SD21_Turbo:
+        return StableDiffusionImg2ImgPipeline, SDDDIMPipeline
     else:
         raise ValueError("Unknown model type")
     
@@ -130,7 +132,6 @@ def _get_pipes(model_type, device):
                 use_safetensors=True,
                 variant="fp16",
                 safety_checker = None
-                #low_cpu_mem_usage=False
             ).to(device)
     else:
         pipe_inference = pipeline_inf.from_pretrained(
@@ -159,6 +160,5 @@ def get_pipes(model_type, scheduler_type, device="cuda"):
         adapter_id = "latent-consistency/lcm-lora-sdxl"
         pipe_inversion.load_lora_weights(adapter_id)
         pipe_inference.load_lora_weights(adapter_id)
-
 
     return pipe_inversion, pipe_inference
